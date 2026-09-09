@@ -233,6 +233,59 @@ footer{color:var(--muted)}
 }
 </style>
 
+
+<style id="pronunciation-upgrade">
+  .pron-control{
+    position:fixed;right:18px;bottom:18px;z-index:120;
+    display:flex;align-items:center;gap:8px;
+    padding:9px 11px;border:1px solid #dfe5ec;border-radius:999px;
+    background:rgba(255,255,255,.92);
+    -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+    box-shadow:0 10px 30px rgba(24,39,75,.12);
+    font-size:12px;color:#526174;user-select:none
+  }
+  .pron-control button{
+    appearance:none;border:0;background:transparent;color:#264c70;
+    font:inherit;font-weight:800;padding:4px 6px;border-radius:999px;cursor:pointer
+  }
+  .pron-control button:hover{background:#eef4f8}
+  .pron-dot{
+    width:7px;height:7px;border-radius:50%;background:#5b82a5;
+    box-shadow:0 0 0 4px rgba(91,130,165,.12)
+  }
+  .pron-toast{
+    position:fixed;left:50%;bottom:72px;z-index:130;
+    transform:translate(-50%,12px);
+    max-width:min(86vw,520px);padding:10px 14px;border-radius:13px;
+    color:#25364a;background:rgba(255,255,255,.96);
+    border:1px solid #dfe6ed;box-shadow:0 14px 36px rgba(24,39,75,.14);
+    opacity:0;pointer-events:none;transition:.18s ease;
+    font-size:14px;font-weight:750;text-align:center
+  }
+  .pron-toast.show{opacity:1;transform:translate(-50%,0)}
+  .pron-toast small{font-size:11px;color:#8590a0;font-weight:650;margin-left:6px}
+  .pron-help{
+    position:fixed;right:18px;bottom:68px;z-index:121;width:min(330px,calc(100vw - 28px));
+    padding:16px;border-radius:16px;background:rgba(255,255,255,.98);
+    border:1px solid #dfe5ec;box-shadow:0 16px 40px rgba(24,39,75,.14);
+    display:none
+  }
+  .pron-help.show{display:block}
+  .pron-help b{display:block;font-size:14px;margin-bottom:7px;color:#223248}
+  .pron-help p{font-size:12px;line-height:1.65;color:#6e7989;margin:0 0 10px}
+  .pron-help .row{display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .pron-help select{
+    padding:7px 9px;border:1px solid #dce3ea;border-radius:9px;
+    background:white;color:#35465a;font-size:12px
+  }
+  .pron-enabled-word{cursor:speaker}
+  @media(max-width:760px){
+    .pron-control{right:12px;bottom:12px}
+    .pron-help{right:12px;bottom:60px}
+    .pron-toast{bottom:64px}
+  }
+</style>
+
 </head>
 <body>
 <header>
@@ -736,5 +789,175 @@ document.getElementById("csvFile").addEventListener("change",async e=>{
 updateStats();
 updateCourseStats();
 </script>
+
+<div class="pron-control" id="pronControl" aria-label="點字發音設定">
+  <span class="pron-dot" id="pronDot"></span>
+  <button type="button" id="pronToggle">🔊 點字發音</button>
+  <button type="button" id="pronSettings" aria-label="發音設定">1×</button>
+</div>
+
+<div class="pron-help" id="pronHelp">
+  <b>點字發音</b>
+  <p>直接點課程、例句、單字庫中的英文單字，就會朗讀該單字。測驗選項與按鈕不會被攔截。</p>
+  <div class="row">
+    <span style="font-size:12px;color:#6e7989">朗讀速度</span>
+    <select id="pronRate">
+      <option value="0.75">0.75× 慢速</option>
+      <option value="0.9">0.9×</option>
+      <option value="1" selected>1× 正常</option>
+      <option value="1.15">1.15×</option>
+    </select>
+  </div>
+</div>
+
+<div class="pron-toast" id="pronToast"></div>
+
+
+<script id="pronunciation-upgrade-js">
+(() => {
+  const synth = window.speechSynthesis;
+  const control = document.getElementById('pronControl');
+  const toggle = document.getElementById('pronToggle');
+  const settings = document.getElementById('pronSettings');
+  const panel = document.getElementById('pronHelp');
+  const rateSel = document.getElementById('pronRate');
+  const toast = document.getElementById('pronToast');
+  const dot = document.getElementById('pronDot');
+
+  let enabled = localStorage.getItem('gept_pron_enabled') !== '0';
+  let rate = parseFloat(localStorage.getItem('gept_pron_rate') || '1');
+  if (![0.75,0.9,1,1.15].includes(rate)) rate = 1;
+  rateSel.value = String(rate);
+
+  const interactiveSelector = [
+    'button','input','select','textarea','a','label','summary',
+    'nav','.btn','.answer','.qopt','.quiz-option','.choice',
+    '[role="button"]','[contenteditable="true"]'
+  ].join(',');
+
+  function updateControl(){
+    toggle.textContent = enabled ? '🔊 點字發音' : '🔇 發音關閉';
+    dot.style.background = enabled ? '#5b82a5' : '#aeb6c1';
+    dot.style.boxShadow = enabled ? '0 0 0 4px rgba(91,130,165,.12)' : 'none';
+    settings.textContent = rate === 1 ? '1×' : `${rate}×`;
+  }
+  updateControl();
+
+  function showToast(word){
+    toast.innerHTML = `🔊 ${word}<small>English · ${rate === 1 ? '1×' : rate + '×'}</small>`;
+    toast.classList.add('show');
+    clearTimeout(showToast.t);
+    showToast.t = setTimeout(() => toast.classList.remove('show'), 1100);
+  }
+
+  function chooseEnglishVoice(){
+    const voices = synth ? synth.getVoices() : [];
+    if (!voices.length) return null;
+    const preferred = voices.find(v => /^en-US$/i.test(v.lang) && /Samantha|Ava|Alex|Evan|Daniel|Karen/i.test(v.name));
+    return preferred ||
+      voices.find(v => /^en-US$/i.test(v.lang)) ||
+      voices.find(v => /^en-/i.test(v.lang)) ||
+      voices.find(v => /^en/i.test(v.lang)) ||
+      null;
+  }
+
+  function speak(text){
+    if (!synth || !text) return;
+    synth.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'en-US';
+    u.rate = rate;
+    u.pitch = 1;
+    const voice = chooseEnglishVoice();
+    if (voice) u.voice = voice;
+    synth.speak(u);
+    showToast(text);
+  }
+
+  // Extract the exact English word underneath a mouse/touch point without
+  // rewriting the lesson DOM, so existing quiz/course behaviors stay intact.
+  function wordAtPoint(x, y){
+    let node = null, offset = 0;
+
+    if (document.caretPositionFromPoint){
+      const pos = document.caretPositionFromPoint(x, y);
+      if (pos){ node = pos.offsetNode; offset = pos.offset; }
+    } else if (document.caretRangeFromPoint){
+      const range = document.caretRangeFromPoint(x, y);
+      if (range){ node = range.startContainer; offset = range.startOffset; }
+    }
+    if (!node || node.nodeType !== Node.TEXT_NODE) return null;
+
+    const parent = node.parentElement;
+    if (!parent || parent.closest(interactiveSelector)) return null;
+    if (parent.closest('#pronControl,#pronHelp,#pronToast')) return null;
+
+    const text = node.nodeValue || '';
+    if (!text.trim()) return null;
+
+    // English words, contractions and hyphenated words.
+    const rx = /[A-Za-z]+(?:['’][A-Za-z]+)*(?:-[A-Za-z]+(?:['’][A-Za-z]+)*)*/g;
+    let m;
+    while ((m = rx.exec(text))){
+      const start = m.index, end = start + m[0].length;
+      if (offset >= start && offset <= end){
+        const w = m[0];
+        // Skip very short UI-like fragments unless they are real English pronouns/articles.
+        if (w.length === 1 && !/^[AIa]$/.test(w)) return null;
+        return w;
+      }
+    }
+    return null;
+  }
+
+  let moved = false, downX = 0, downY = 0;
+  document.addEventListener('pointerdown', e => {
+    moved = false; downX = e.clientX; downY = e.clientY;
+  }, {passive:true});
+  document.addEventListener('pointermove', e => {
+    if (Math.abs(e.clientX-downX) > 8 || Math.abs(e.clientY-downY) > 8) moved = true;
+  }, {passive:true});
+
+  document.addEventListener('pointerup', e => {
+    if (!enabled || moved || e.button > 0) return;
+    if (e.target && e.target.closest && e.target.closest(interactiveSelector)) return;
+    if (e.target && e.target.closest && e.target.closest('#pronControl,#pronHelp,#pronToast')) return;
+
+    const sel = window.getSelection && window.getSelection();
+    if (sel && String(sel).trim()) return; // don't interfere with text selection
+
+    const word = wordAtPoint(e.clientX, e.clientY);
+    if (word) speak(word);
+  }, {passive:true});
+
+  toggle.addEventListener('click', e => {
+    e.stopPropagation();
+    enabled = !enabled;
+    localStorage.setItem('gept_pron_enabled', enabled ? '1' : '0');
+    if (!enabled && synth) synth.cancel();
+    updateControl();
+  });
+
+  settings.addEventListener('click', e => {
+    e.stopPropagation();
+    panel.classList.toggle('show');
+  });
+
+  rateSel.addEventListener('change', () => {
+    rate = parseFloat(rateSel.value) || 1;
+    localStorage.setItem('gept_pron_rate', String(rate));
+    updateControl();
+  });
+
+  document.addEventListener('click', e => {
+    if (!e.target.closest('#pronControl,#pronHelp')) panel.classList.remove('show');
+  });
+
+  if (synth && 'onvoiceschanged' in synth){
+    synth.onvoiceschanged = () => synth.getVoices();
+  }
+})();
+</script>
+
 </body>
 </html>
